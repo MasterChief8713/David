@@ -29,7 +29,8 @@ DATA_API = "https://data-api.polymarket.com"
 # Detection thresholds
 MIN_BET_SIZE_USD = 19900       # Flag bets above this (cost basis)
 LOW_ODDS_THRESHOLD = 0.30     # Flag bets on outcomes below 30%
-VOLUME_SPIKE_MULT = 5          # Flag if hourly volume > 5x baseline
+VOLUME_SPIKE_MULT = 5          # Flag if hourly volume > 5x baseline (DISABLED — too noisy)
+VOLUME_SPIKE_ENABLED = False   # Set True to re-enable
 WALLET_CLUSTER_MIN = 3         # Flag if 3+ wallets bet same direction in 1hr
 MIN_CLUSTER_TOTAL_USD = 20000  # Total cluster volume must exceed this to alert
 POLL_INTERVAL_SEC = 300        # Check every 5 minutes
@@ -222,7 +223,7 @@ def analyze_market(market, state):
         )
 
         baseline = state.get("baselines", {}).get(baseline_key, 0)
-        if baseline > 100 and hourly_vol > baseline * VOLUME_SPIKE_MULT and hourly_vol > 2000:
+        if VOLUME_SPIKE_ENABLED and baseline > 100 and hourly_vol > baseline * VOLUME_SPIKE_MULT and hourly_vol > 2000:
             sh = make_hash(["spike", slug, i, now_ts // 3600])
             if sh not in state.get("alerted", []):
                 alerts.append({
@@ -351,6 +352,29 @@ def send_alert(alert):
 
 
 # ─── Main ──────────────────────────────────────────────────────────────
+def filter_spray_bettors(alerts):
+    """Remove wallets that bet across 3+ different markets — hedgers, not insiders.
+    Real insider signal = concentrated conviction on ONE market."""
+    # Count how many unique markets each wallet appears in
+    wallet_markets = {}
+    for a in alerts:
+        if a["type"] != "LARGE_BET":
+            continue
+        wallet = a.get("wallet", "")
+        market = a.get("market", "")
+        if wallet not in wallet_markets:
+            wallet_markets[wallet] = set()
+        wallet_markets[wallet].add(market)
+
+    # Identify spray bettors (3+ markets)
+    spray_wallets = {w for w, markets in wallet_markets.items() if len(markets) >= 3}
+    if spray_wallets:
+        log.info(f"Filtering {len(spray_wallets)} spray bettors across 3+ markets")
+
+    # Filter them out
+    return [a for a in alerts if a.get("wallet", "") not in spray_wallets]
+
+
 def run_scan(state):
     log.info("Scanning...")
     markets = get_geo_events()
@@ -360,6 +384,9 @@ def run_scan(state):
         alerts = analyze_market(market, state)
         all_alerts.extend(alerts)
         time.sleep(0.15)  # Rate limit
+
+    # Filter out spray bettors (same wallet across many markets = hedging, not insider)
+    all_alerts = filter_spray_bettors(all_alerts)
 
     for alert in all_alerts:
         send_alert(alert)
