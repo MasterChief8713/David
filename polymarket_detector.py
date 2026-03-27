@@ -31,6 +31,7 @@ MIN_BET_SIZE_USD = 19900       # Flag bets above this (cost basis)
 LOW_ODDS_THRESHOLD = 0.30     # Flag bets on outcomes below 30%
 VOLUME_SPIKE_MULT = 5          # Flag if hourly volume > 5x baseline
 WALLET_CLUSTER_MIN = 3         # Flag if 3+ wallets bet same direction in 1hr
+MIN_CLUSTER_TOTAL_USD = 20000  # Total cluster volume must exceed this to alert
 POLL_INTERVAL_SEC = 300        # Check every 5 minutes
 
 # Geopolitical keywords for event discovery
@@ -258,6 +259,9 @@ def analyze_market(market, state):
             wallets[w]["count"] += 1
 
         big_wallets = {w: d for w, d in wallets.items() if d["total"] > 1000}
+        total_cluster_vol = sum(d["total"] for d in big_wallets.values())
+        if total_cluster_vol < MIN_CLUSTER_TOTAL_USD:
+            big_wallets = {}  # Not enough total volume to trigger
         if len(big_wallets) >= WALLET_CLUSTER_MIN:
             ch = make_hash(["cluster", slug, i, now_ts // 3600])
             if ch not in state.get("alerted", []):
